@@ -1,3 +1,3 @@
-# Simple Starter
+# genuary2022.8
 
-Simple JS build starter for simple, client-only demos.
+Single curve only. Connected arcs with smoothing 
