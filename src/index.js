@@ -1,10 +1,10 @@
-import domready from "domready"
 import "./style.css"
 
-import AABB from "./AABB";
-import Color from "./Color";
+import Color, { getLuminance } from "./Color";
 import { voronoi } from "d3-voronoi";
 import { polygonCentroid } from "d3-polygon";
+import SimplexNoise from "simplex-noise";
+import getRandomPalette from "./getRandomPalette";
 
 
 const PHI = (1 + Math.sqrt(5)) / 2;
@@ -25,6 +25,59 @@ function wrap(number)
     return n < 0 ? TAU + n * TAU : n * TAU;
 }
 
+const black = new Color(0,0,0)
+
+function sortByLightness(palette, limit = 12000)
+{
+
+    const a = palette.map(c => {
+        const color = Color.from(c);
+        return {
+            color,
+            lum: getLuminance(color)
+        };
+    })
+
+    a.sort((a,b) => a.lum - b.lum)
+
+    if (a[0].lum < limit)
+    {
+        const { color } = a[0|Math.random() * a.length]
+
+        const result = color.mix(black, 0.25);
+        //console.log("Modified luminance", Math.round(getLuminance(result)))
+        a[0].color = result
+    }
+    return a.map(a => a.color.toRGBHex());
+}
+
+
+const getSaturation = a => {
+    const la = (1 / 2) * (Math.max(a.r, a.g, a.b) + Math.min(a.r, a.g, a.b))
+    let sa;
+    if (la === 1)
+    {
+        sa = 0
+    }
+    else
+    {
+        sa = (Math.max(a.r, a.g, a.b) - Math.min(a.r, a.g, a.b)) / (1 - Math.abs(2 * la - 1))
+    }
+};
+
+
+function sortBySaturation(palette)
+{
+
+    const a = palette.map(c => Color.from(c))
+
+    a.sort((a,b) => {
+        return getSaturation(b) - getSaturation(a);
+
+    })
+    return a.map(a => a.toRGBHex());
+}
+
 
 
 const config = {
@@ -39,10 +92,12 @@ const config = {
 let ctx;
 let canvas;
 
-const randomCount = 450
-const pickCount = 300
+const tweak = 4
 
+const randomCount = 90
+const pickCount = 90
 
+const leafWidthMultiplier = 20
 function shuffle(a) {
     let j, x, i;
     for (i = a.length - 1; i > 0; i--) {
@@ -69,8 +124,107 @@ function angleBetweenVectors(x1,y1,x2,y2,x3,y3)
     return TAU/2 - Math.acos((vx0 * vx1 + vy0 * vy1) / (Math.sqrt(vx0*vx0+vy0*vy0) * Math.sqrt(vx1*vx1+vy1*vy1)))
 }
 
+let noise, leafWidthPower, leafCap, logo
 
-domready(
+
+const shadow = Color.from("#00251a")
+const plant = Color.from("#009648")
+const light = Color.from("#fffac7")
+const tmp = Color.from("#000")
+
+let env
+
+function colorize(image, logoColor)
+{
+    const { width, height } = config
+    const logoCanvas = document.createElement("canvas")
+
+    logoCanvas.width = image.width
+    logoCanvas.height = image.height
+
+    const logoCtx = logoCanvas.getContext("2d");
+
+    logoCtx.clearRect(0,0,image.width, image.height)
+
+    logoCtx.drawImage(image, 0,0)
+
+    logoCtx.globalCompositeOperation = "source-atop"
+    logoCtx.fillStyle = logoColor
+    logoCtx.fillRect(0,0, image.width, image.height)
+
+    return logoCanvas;
+}
+
+
+function drawLogoAndStruts(logoColor, strutsColor = "rgba(0,0,0,0.8)")
+{
+
+    const { width, height } = config
+    const cx = width/2
+    const cy = height/2
+
+    const bg = document.createElement("canvas")
+
+    bg.width = width
+    bg.height = height
+
+    const bgCtx = bg.getContext("2d");
+
+    bgCtx.clearRect(0,0,width, height)
+
+    const logo = colorize(document.getElementById("logo"), logoColor);
+
+    const aspect = logo.width / logo.height
+
+    const sw = width * 0.75
+    const sh = height * 0.75
+    const screenAspect = sw/sh
+
+    let w, h
+    if (aspect >= screenAspect)
+    {
+        const scale = sw / logo.width
+        w = logo.width * scale
+        h = logo.height * scale
+    }
+    else
+    {
+        const scale = sh / logo.height
+        w = logo.width * scale
+        h = logo.height* scale
+    }
+
+
+
+    const struts = 4 + Math.random() * 8
+
+    bgCtx.fillStyle = strutsColor
+    for (let i = 0; i < struts; i++)
+    {
+        const h = Math.random() < 0.3;
+
+        const size = Math.round(24 + Math.random() * 12)
+
+        if (h)
+        {
+            const y = 0|(Math.random() * height)
+            bgCtx.fillRect(0,y,width,size)
+        }
+        else
+        {
+            const x = 0|(Math.random() * width)
+            bgCtx.fillRect(x,0, size, height)
+        }
+
+    }
+    bgCtx.drawImage(logo, cx - w/2, cy - h/2, w, h )
+
+
+    return bg
+
+}
+
+window.onload = (
     () => {
 
         canvas = document.getElementById("screen");
@@ -86,6 +240,7 @@ domready(
         canvas.height = height;
 
 
+
         const cx = width/2
         const cy = height/2
 
@@ -97,19 +252,29 @@ domready(
             const w = width * size
             const h = height * size
 
-            let pts = []
-            for (let i = 0; i < num; i++)
-            {
-                pts.push([
-                    Math.round(cx - w/2 + Math.random() * w),
-                    Math.round(cy - h/2 + Math.random() * h)
-                ])
+            const { data } = logo.getContext("2d").getImageData(0,0,width, height)
 
-            }
+            let pts = []
+            do
+            {
+                const x = Math.round(cx - w / 2 + Math.random() * w);
+                const y = Math.round(cy - h / 2 + Math.random() * h);
+
+                const off = (y * width + x) * 4
+
+                if (data[off + 3] > 128)
+                {
+                    pts.push([
+                        x,
+                        y
+                    ])
+                }
+
+            } while (pts.length < num * 2)
 
             const v = voronoi().extent([[0, 0], [width, height]])
 
-            const relaxCount = 5 + Math.random() * 5;
+            const relaxCount = 4;
 
             for (let i=0; i < relaxCount; i++)
             {
@@ -130,8 +295,7 @@ domready(
 
 
 
-        ctx.lineWidth = 2;
-        ctx.lineCap = "round"
+        ctx.lineWidth = 2 * tweak;
 
         let arcs = []
         const arc = (x2, y2, x3, y3, clockwise, bg) => {
@@ -148,15 +312,45 @@ domready(
             // ctx.beginPath()
             // ctx.arc(mx, my, r, sa, ea, clockwise)
             // ctx.stroke()
+
+
             arcs.push({mx, my, r, sa, ea, clockwise, bg})
         };
 
 
         function buildArcs()
         {
+
+            const palette = getRandomPalette();
+
+            const byLightness = sortByLightness(palette);
+
+            const bySaturation = sortBySaturation(palette).slice(0,-2);
+
+            const bgColor0 = byLightness[0];
+            const bgColor1 = byLightness[1];
+
+            const logoColor = bySaturation[0|Math.random()*bySaturation.length]
+
+            noise = new SimplexNoise()
+
+            leafWidthPower = 1 + Math.random() * 0.3
+            ctx.lineCap = Math.random() < 0.5 ? "round" : "butt"
+
             arcs = []
-            ctx.fillStyle = Color.from("#12DE56").mix(Color.from("#16161d"), 0.7 + Math.random() * 0.25).toRGBHex();
+
+            const gradient = ctx.createLinearGradient(0,0,0,height);
+
+            gradient.addColorStop(0, bgColor1)
+            gradient.addColorStop(1, bgColor0)
+
+            ctx.fillStyle = gradient
             ctx.fillRect(0,0, width, height);
+
+            env = Color.from(bgColor0).mix(Color.from(bgColor1), 0.5);
+            logo = drawLogoAndStruts(logoColor)
+
+            ctx.drawImage(logo, 0, 0)
 
             let prevX = null, prevY = null
 
@@ -300,7 +494,7 @@ domready(
         let pos = -1;
         let finePos = 0;
 
-        const speed = 0.1
+        const speed = 0.05
 
         let angle = 0;
         let step = 0;
@@ -328,14 +522,28 @@ domready(
 
             if (running)
             {
-                const { mx, my, sa : oea, r, clockwise } = arcs[pos]
+                const { mx, my, sa : oea, r, clockwise,w } = arcs[pos]
 
                 const sa = wrap(angle)
                 angle += step
                 const ea = finePos === 0 ? oea: wrap(angle + step)
 
+                const x0 = mx + Math.cos(sa) * r;
+                const y0 = my + Math.sin(sa) * r;
+
+                const ns = 0.01
+
+                const v = 0.5 + 0.5 * Math.cos(sa + TAU/8)
+
+                shadow.mix(plant, v, tmp)
+                tmp.mix(env,  0.3, tmp)
+                tmp.mix(light,  0.1 + 0.1 * noise.noise3D(x0 * ns , y0 * ns, 0), tmp)
+
+                ctx.strokeStyle = tmp.toRGBHex()
+                const rnd = 0.5 + 0.5 * noise.noise3D(x0 * ns, y0 * ns, pos * ns);
+                ctx.lineWidth = 0 | (1 + (Math.pow(rnd,leafWidthPower)) * leafWidthMultiplier)
                 ctx.beginPath()
-                ctx.moveTo(mx + Math.cos(sa) * r,my + Math.sin(sa) * r)
+                ctx.moveTo(x0, y0)
                 ctx.lineTo(mx + Math.cos(ea) * r,my + Math.sin(ea) * r)
                 ctx.stroke()
 
@@ -344,7 +552,7 @@ domready(
         }
         const paint = () => {
 
-            ctx.strokeStyle = "rgba(18,222,86, 0.4)"
+            //ctx.strokeStyle = "#0B8F37"
 
             for (let i=0; i < 12 && running; i++)
             {
